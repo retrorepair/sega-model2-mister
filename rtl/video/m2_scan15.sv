@@ -113,12 +113,11 @@ module m2_scan15 #(
   // pair straddles the change, and each moving thing is then combed, every frame. So watch the image change: if for eight changes
   // running each fell on an odd frame, the pairing is wrong and the frame is declared the even one (once; a cadence that changes
   // by a frame now and then never gets eight in a row, and the pairing is left alone).
-  logic [3:0]  tg1, tg2, tg_s, tg_p;   // tag synchroniser, the stable value, the value at the last frame start
+  // The tag is asynchronous but changes in the vertical blank, 1.6 ms before the frame start it is compared at, so one register
+  // is a synchroniser enough.
+  logic [3:0]  tg_s, tg_p;             // the tag, and its value at the last frame start
   logic [2:0]  bad;                    // changes in a row that fell on an odd frame
-  always_ff @(posedge clk) begin
-    tg1 <= img_tag; tg2 <= tg1;
-    if (tg1 == tg2) tg_s <= tg2;
-  end
+  always_ff @(posedge clk) tg_s <= img_tag;
 
   wire         fs_now  = vb_d && !vb_in;                   // the vertical blank ended on this sample
   wire         rise    = de_in && !de_d;                   // first pixel of a line
@@ -176,23 +175,29 @@ module m2_scan15 #(
   wire       vs_c  = field ? vs_i1 : vs_i0;
   wire       de_c  = (hcnt < 10'(W)) && (vcnt < 10'(VIS));
 
-  // the source rows of the line on show: s and s + 1, weight r / 5 on the second
-  logic [8:0] s_c;
-  logic [3:0] sm_c;                    // s_c mod 12: the ring slot of row s
+  // The source row of the line on show is s = floor(4m/5), fraction r/5 with r = 4m mod 5, for the frame row
+  // m = 2 * vcnt + the field's parity. Four rows are read, s-1 to s+2, clamped to the picture; they sit in ring slots
+  // (row mod 12) that follow each other, so only the slot of the first, p, is tracked: p is the slot of row max(s-1, 0).
+  // One line on, s moves by 1 + c (c = the carry of r + 3 mod 5), so p moves by c, and by one more unless s was 0 (then p
+  // stands for row 0, not row -1). The clamps need no row number: s = 0 is the first line of a field, s >= 382 its last
+  // (m >= 478), and s = 383 the last line of the field that carries the odd rows.
+  logic [3:0] p;
   logic [2:0] r_c;
-  wire  [3:0] r3  = {1'b0, r_c} + 4'd3;
-  wire        rc  = (r3 >= 4'd5);
-  wire  [2:0] r_n = rc ? 3'(r3 - 4'd5) : 3'(r3);
-  wire  [8:0] s_n = s_c + 9'd1 + {8'd0, rc};
-  wire  [4:0] sm_a = {1'b0, sm_c} + 5'd1 + {4'd0, rc};
-  wire  [3:0] sm_n = (sm_a >= 5'd12) ? 4'(sm_a - 5'd12) : 4'(sm_a);
+  wire        top   = (vcnt == 10'd0);                   // s = 0
+  wire        last  = (vcnt == 10'(VIS - 1));            // s >= 382
+  wire        lastb = last && (field ^ swp);             // s = 383
+  wire  [3:0] r3    = {1'b0, r_c} + 4'd3;
+  wire        rc    = (r3 >= 4'd5);
+  wire  [2:0] r_n   = rc ? 3'(r3 - 4'd5) : 3'(r3);
+  wire  [4:0] p_a   = {1'b0, p} + {4'd0, top ? 1'b0 : 1'b1} + {4'd0, rc};
+  wire  [3:0] p_n   = (p_a >= 5'd12) ? 4'(p_a - 5'd12) : 4'(p_a);
 
   wire        align = fs_even && en;
   assign dbg_align = align;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      hcnt <= '0; vcnt <= '0; field <= 1'b0; s_c <= '0; sm_c <= '0; r_c <= '0;
+      hcnt <= '0; vcnt <= '0; field <= 1'b0; p <= '0; r_c <= '0;
     end else if (align) begin
       // the counters the free-running output would hold at this instant, once locked
       field <= 1'b1;
@@ -204,15 +209,13 @@ module m2_scan15 #(
         if (vcnt == vt - 10'd1) begin
           vcnt  <= '0;
           field <= ~field;
-          s_c   <= '0;
-          sm_c  <= '0;
+          p     <= '0;
           r_c   <= (field ^ swp) ? 3'd0 : 3'd4;   // the field about to start: the odd rows' field starts on frame row 1 (4j = 4)
         end else begin
           vcnt <= vcnt + 10'd1;
           if (vcnt < 10'(VIS) - 10'd1) begin
-            s_c  <= s_n;
-            sm_c <= sm_n;
-            r_c  <= r_n;
+            p   <= p_n;
+            r_c <= r_n;
           end
         end
       end else begin
@@ -234,21 +237,16 @@ module m2_scan15 #(
   //   smooth  4 12  4  0 | 3 10  7  0 | 2  9  8  1 | 1  8  9  2 | 0  7 10  3
   //   sharp   0 20  0  0 | 0 16  4  0 | 0 12  8  0 | 0  8 12  0 | 0  4 16  0   (B(m) alone)
   logic [3:0]  ph;
-  (* multstyle = "dsp" *) logic [12:0] pq_r, pq_g, pq_b;   // this cycle's tap x weight, registered
   logic [12:0] acc_r, acc_g, acc_b;       // at most 20 * 255 + 10
-  logic [23:0] blend;
+  logic [3:0]  q;                         // the ring slot being read
 
-  // the ring slots (row mod 12) of rows s-1, s, s+1, s+2, the outer ones clamped to the picture's first and last rows
+  // the slots of the four rows, one a cycle: p, then the next slot unless the row is clamped (top: row -1 is row 0, so the
+  // second read repeats the first; bottom: rows past the last repeat it)
   function automatic logic [3:0] up1(input logic [3:0] a);
     return (a == 4'd11) ? 4'd0 : a + 4'd1;
   endfunction
-  function automatic logic [3:0] up2(input logic [3:0] a);
-    return (a >= 4'd10) ? a - 4'd10 : a + 4'd2;
-  endfunction
-  wire [3:0] k0 = (s_c == 9'd0) ? 4'd0 : (sm_c == 4'd0) ? 4'd11 : sm_c - 4'd1;
-  wire [3:0] k2 = (s_c >= 9'(SRCH - 1)) ? sm_c : up1(sm_c);
-  wire [3:0] k3 = (s_c >= 9'(SRCH - 1)) ? sm_c : (s_c == 9'(SRCH - 2)) ? up1(sm_c) : up2(sm_c);
-  wire [3:0] ksel = (ph == 4'd1) ? k0 : (ph == 4'd3) ? k2 : (ph == 4'd4) ? k3 : sm_c;   // the slot to ask for after this cycle
+  wire        hold = ((ph == 4'd2) && top) || ((ph == 4'd3) && lastb) || ((ph == 4'd4) && last);
+  wire  [3:0] q_n  = (ph == 4'd1) ? p : hold ? q : up1(q);
 
   // the weight of the word that is on rd: tap 0 to 3 in ph 3 to 6 (tap = ph - 3, i.e. ph[1:0] + 1)
   logic [4:0] wcur;
@@ -267,38 +265,30 @@ module m2_scan15 #(
     endcase
   end
 
-  // x 3277 / 65536 = x / 20 (exact for every multiple of 20 up to 20 * 255)
+  // x 3277 / 65536 = x / 20 (exact for every multiple of 20 up to 20 * 255); the multiplier is combinational off acc, which
+  // holds from ph 7 on, and the output register takes it at the next enable
   (* multstyle = "dsp" *) wire [24:0] mul_r = acc_r * 12'd3277;
   (* multstyle = "dsp" *) wire [24:0] mul_g = acc_g * 12'd3277;
   (* multstyle = "dsp" *) wire [24:0] mul_b = acc_b * 12'd3277;
-
-  wire [12:0] a_in_r = (ph == 4'd4) ? 13'd10 : acc_r;    // + 10: the rounding of the 1/20
-  wire [12:0] a_in_g = (ph == 4'd4) ? 13'd10 : acc_g;
-  wire [12:0] a_in_b = (ph == 4'd4) ? 13'd10 : acc_b;
+  wire [23:0] blend = {mul_r[23:16], mul_g[23:16], mul_b[23:16]};
 
   always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      ph <= 4'd0; ra <= '0;
-      pq_r <= '0; pq_g <= '0; pq_b <= '0; acc_r <= '0; acc_g <= '0; acc_b <= '0; blend <= '0;
-    end else begin
-      if (ce_out) ph <= 4'd1;
-      else if (ph != 4'd0 && ph != 4'd15) ph <= ph + 4'd1;
+    if (!rst_n) ph <= 4'd0;
+    else if (ce_out) ph <= 4'd1;
+    else if (ph != 4'd0 && ph != 4'd15) ph <= ph + 4'd1;
+  end
 
-      // the ring address for the next cycle: rows s-1, s, s+1, s+2 in the cycles after ph 1, 2, 3, 4
-      ra <= {ksel, hcnt[8:0]};
+  // the datapath has no reset: it holds nothing that matters until the first line is read
+  always_ff @(posedge clk) begin
+    // the ring address for the next cycle: the four rows in the cycles after ph 1, 2, 3, 4
+    q  <= q_n;
+    ra <= {q_n, hcnt[8:0]};
 
-      // the product of the word on rd and its weight, every cycle (only ph 3 to 6 are the four taps)
-      pq_r <= rd[23:16] * wcur;
-      pq_g <= rd[15:8]  * wcur;
-      pq_b <= rd[7:0]   * wcur;
-
-      // and the sum of the four products, one cycle behind
-      if (ph >= 4'd4 && ph <= 4'd7) begin
-        acc_r <= a_in_r + pq_r;
-        acc_g <= a_in_g + pq_g;
-        acc_b <= a_in_b + pq_b;
-      end
-      if (ph == 4'd8) blend <= {mul_r[23:16], mul_g[23:16], mul_b[23:16]};
+    // the four words arrive on rd in ph 3 to 6: weight each and sum (the 10 is the rounding of the 1/20)
+    if (ph >= 4'd3 && ph <= 4'd6) begin
+      acc_r <= ((ph == 4'd3) ? 13'd10 : acc_r) + rd[23:16] * wcur;
+      acc_g <= ((ph == 4'd3) ? 13'd10 : acc_g) + rd[15:8]  * wcur;
+      acc_b <= ((ph == 4'd3) ? 13'd10 : acc_b) + rd[7:0]   * wcur;
     end
   end
 

@@ -163,7 +163,7 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
     if (dut.ph >= 4'd3 && dut.ph <= 4'd6 && dut.de_c && warm) begin
       automatic int k  = int'(dut.ph) - 3;
       automatic int m  = 2 * int'(dut.vcnt) + int'(dut.field ^ swp);
-      automatic int s  = int'(dut.s_c);
+      automatic int s  = (4 * m) / 5;
       automatic int x  = int'(dut.hcnt[8:0]);
       automatic int row = clampr(s + k - 1);
       automatic logic [7:0] f = {4'd0, dut.rd[7:4]};
@@ -176,10 +176,10 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
             if (imgid[f[3:0]] != last_a) begin pair_bad++; $display("PAIRBAD at native frame %0d", frame); end
           end
         end
-        // the output row on show steps through source row 4m/5, fraction 4m mod 5
-        if (int'(dut.s_c) != (4 * m) / 5 || int'(dut.r_c) != (4 * m) % 5) begin
+        // the output row on show steps through fraction 4m mod 5 (the row itself is checked by the ring words below)
+        if (int'(dut.r_c) != (4 * m) % 5) begin
           step_fails++;
-          if (step_fails <= 5) $display("STEP  m=%0d s=%0d r=%0d want s=%0d r=%0d at %0t", m, s, int'(dut.r_c), (4 * m) / 5, (4 * m) % 5, $time);
+          if (step_fails <= 5) $display("STEP  m=%0d r=%0d want r=%0d at %0t", m, int'(dut.r_c), (4 * m) % 5, $time);
         end
       end
       if (dut.rd !== pat(f, row, x) || f != cur_f) begin
