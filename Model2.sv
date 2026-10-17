@@ -127,6 +127,11 @@ localparam CONF_STR = {
 	// outputs 480 interlaced lines, 384 -> 480 by an exact 4:5 blend, at the 262/263-line 15.1 kHz timing whatever the line
 	// count above says. 15 kHz only; no effect at 24 kHz.
 	"O[64],15kHz picture,1 to 1,Filled (15.1kHz);",
+	// Filled only: the vertical low-pass that gives a one-row line equal light in both fields (no 29 Hz flicker), at the cost of a
+	// little vertical softness; Off is the plain 4:5 blend.
+	"O[65],Vertical smoothing,On,Off;",
+	// Filled only: which field carries the odd rows. Normal puts the even rows on the field whose vsync is aligned to a line.
+	"O[66],Field order,Normal,Swapped;",
 	"-;",
 	// The read capture phase is an OSD option rather than a constant because the
 	// Model 1 core found its board returned every burst shifted right by one
@@ -492,8 +497,10 @@ wire       vid_il_sel;                    // R795: the OSD bit or the CRT MRA's 
 always @(posedge clk_mem) vil_s <= {vil_s[1:0], vid_il_sel};
 wire       vid_il = vil_s[2];
 // GunCon work: "Filled" 15 kHz. The renderer sees native timing (vid_il_c = 0) and a second enable runs the 15 kHz output.
-reg [2:0]  scn_s;
-always @(posedge clk_mem) scn_s <= {scn_s[1:0], status[64]};
+reg [2:0]  scn_s, flt_s, swp_s;
+always @(posedge clk_mem) begin
+	scn_s <= {scn_s[1:0], status[64]}; flt_s <= {flt_s[1:0], status[65]}; swp_s <= {swp_s[1:0], status[66]};
+end
 wire       vid_scan = vid_il & scn_s[2];
 wire       vid_il_c = vid_il & ~vid_scan;
 // R834: 268.5-line fields at 656 pixels: 537 x 656 a frame = 537/5300
@@ -6652,7 +6659,7 @@ assign ov_b = mix_b_q;
 wire        sc_hs, sc_vs, sc_de, sc_fld, sc_align;
 wire [23:0] sc_rgb;
 m2_scan15 u_scan15 (
-	.clk(clk_mem), .rst_n(mem_rst_n), .en(vid_scan),
+	.clk(clk_mem), .rst_n(mem_rst_n), .en(vid_scan), .filt(~flt_s[2]), .swp(swp_s[2]), .img_tag(r826_stag),
 	.ce_in(ce_pix), .de_in(~(tile_hb | tile_vb)), .vb_in(tile_vb), .rgb_in({ov_r, ov_g, ov_b}),
 	.ce_out(ce_out), .nl(1'b1), .ml(1'b0),
 	.o_hs(sc_hs), .o_vs(sc_vs), .o_de(sc_de), .o_field(sc_fld), .o_rgb(sc_rgb), .dbg_align(sc_align)
