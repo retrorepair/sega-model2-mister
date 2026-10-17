@@ -103,9 +103,9 @@ module tb_m2_scan15 #(parameter int DPX = 850);
     ce_out_d <= ce_out;
 
     // source writes: how long after its last read was this word overwritten?
-    if (dut.we_q) begin
-      automatic int slot = int'(dut.wa_q[11:9]);
-      automatic int x    = int'(dut.wa_q[8:0]);
+    if (dut.we_w) begin
+      automatic int slot = int'(dut.wa_w[11:9]);
+      automatic int x    = int'(dut.wa_w[8:0]);
       if (warm && lastrd[slot][x] != 0) begin
         automatic longint sl = $time - lastrd[slot][x];
         if (sl < min_over) min_over = sl;
@@ -126,19 +126,19 @@ module tb_m2_scan15 #(parameter int DPX = 850);
     end
 
     // at ph 5 both source words are in a_q / b_q: they must be the rows asked for, of one native frame
-    if (dut.ph == 4'd5 && dut.de_c && warm) begin
+    if (dut.ph == 4'd4 && dut.de_c && warm) begin
       automatic int s  = int'(dut.s_c);
       automatic int sb = (s >= 383) ? s : s + 1;
       automatic int x  = int'(dut.hcnt[8:0]);
       automatic logic [7:0] fa = {4'd0, dut.a_q[7:4]};
-      automatic logic [7:0] fb = {4'd0, dut.b_q[7:4]};
-      if (dut.a_q !== pat(fa, s, x) || dut.b_q !== pat(fb, sb, x) || fa != fb) begin
+      automatic logic [7:0] fb = {4'd0, dut.rd[7:4]};
+      if (dut.a_q !== pat(fa, s, x) || dut.rd !== pat(fb, sb, x) || fa != fb) begin
         ring_fails++;
-        if (ring_fails <= 5) $display("RING  x=%0d s=%0d a=%h b=%h (frames %0d %0d) at %0t", x, s, dut.a_q, dut.b_q, fa, fb, $time);
+        if (ring_fails <= 5) $display("RING  x=%0d s=%0d a=%h b=%h (frames %0d %0d) at %0t", x, s, dut.a_q, dut.rd, fa, fb, $time);
       end
-      exp_r   = blend8(dut.a_q[23:16], dut.b_q[23:16], int'(dut.r_q));
-      exp_g   = blend8(dut.a_q[15:8],  dut.b_q[15:8],  int'(dut.r_q));
-      exp_b   = blend8(dut.a_q[7:0],   dut.b_q[7:0],   int'(dut.r_q));
+      exp_r   = blend8(dut.a_q[23:16], dut.rd[23:16], int'(dut.r_q));
+      exp_g   = blend8(dut.a_q[15:8],  dut.rd[15:8],  int'(dut.r_q));
+      exp_b   = blend8(dut.a_q[7:0],   dut.rd[7:0],   int'(dut.r_q));
       exp_vis = 1'b1;
     end
 

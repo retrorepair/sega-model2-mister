@@ -536,15 +536,15 @@ always @(posedge clk_mem) begin
 end
 // The Filled output's pixel enable: the 262/263-line timing, 861/8692 of clk_mem (9.9057 MHz), free-running so its phase
 // against ce_pix is fixed for ever (two output fields are exactly two native frames: 3,476,800 clk_mem cycles each way).
-reg [19:0] ceo_acc;
+reg [13:0] ceo_acc;                       // 8692 + 861 < 2^14
 reg        ce_out;
 always @(posedge clk_mem) begin
-	if (ceo_acc >= 20'(CEN_DEN)) ceo_acc <= 20'd0;
-	else if (ceo_acc + 20'(CEN_NUM) >= 20'(CEN_DEN)) begin
-		ceo_acc <= ceo_acc + 20'(CEN_NUM) - 20'(CEN_DEN);
+	if (ceo_acc >= 14'(CEN_DEN)) ceo_acc <= 14'd0;
+	else if (ceo_acc + 14'(CEN_NUM) >= 14'(CEN_DEN)) begin
+		ceo_acc <= ceo_acc + 14'(CEN_NUM) - 14'(CEN_DEN);
 		ce_out  <= 1'b1;
 	end else begin
-		ceo_acc <= ceo_acc + 20'(CEN_NUM);
+		ceo_acc <= ceo_acc + 14'(CEN_NUM);
 		ce_out  <= 1'b0;
 	end
 end

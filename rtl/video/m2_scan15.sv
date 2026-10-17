@@ -84,10 +84,10 @@ module m2_scan15 #(
 
   // ------------------------------------------------------------ the ring
   logic [23:0] ram [0:4095];           // eight lines of 512 words
-  logic        we_q;
-  logic [11:0] wa_q;
-  logic [23:0] wd_q;
-  always_ff @(posedge clk) if (we_q) ram[wa_q] <= wd_q;
+  logic        we_w;
+  logic [11:0] wa_w;
+  logic [23:0] wd_w;
+  always_ff @(posedge clk) if (we_w) ram[wa_w] <= wd_w;
 
   logic [11:0] ra;
   logic [23:0] rd;
@@ -97,40 +97,31 @@ module m2_scan15 #(
   logic        vb_d, de_d;
   logic [8:0]  wx, wy;
   logic        par;
-  logic        fs;                     // a native frame has just started (one clk)
-  logic        fs_even;                // ... and it is the first of the two a frame of output spans
+  logic        fs_even;                // a native frame has just started, and it is the first of the two a frame of output spans
 
   wire         fs_now  = vb_d && !vb_in;                   // the vertical blank ended on this sample
   wire         rise    = de_in && !de_d;                   // first pixel of a line
   wire [8:0]   wy_base = fs_now ? 9'h1FF : wy;
   wire [8:0]   wy_n    = rise ? wy_base + 9'd1 : wy_base;
   wire [8:0]   wx_n    = rise ? 9'd0 : wx;
+  assign we_w = ce_in && de_in;
+  assign wa_w = {wy_n[2:0], wx_n};
+  assign wd_w = rgb_in;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      vb_d <= 1'b1; de_d <= 1'b0; wx <= '0; wy <= '0; par <= 1'b0;
-      fs <= 1'b0; fs_even <= 1'b0; we_q <= 1'b0; wa_q <= '0; wd_q <= '0;
+      vb_d <= 1'b1; de_d <= 1'b0; wx <= '0; wy <= '0; par <= 1'b0; fs_even <= 1'b0;
     end else begin
-      fs      <= 1'b0;
       fs_even <= 1'b0;
-      we_q    <= 1'b0;
       if (ce_in) begin
         vb_d <= vb_in;
         de_d <= de_in;
         wy   <= wy_n;
         if (fs_now) begin
-          fs      <= 1'b1;
           par     <= ~par;
           fs_even <= par;              // par was 1: this frame is the even one
         end
-        if (de_in) begin
-          we_q <= 1'b1;
-          wa_q <= {wy_n[2:0], wx_n};
-          wd_q <= rgb_in;
-          wx   <= wx_n + 9'd1;
-        end else begin
-          wx   <= 9'd0;
-        end
+        wx <= de_in ? wx_n + 9'd1 : 9'd0;
       end
     end
   end
@@ -195,7 +186,7 @@ module m2_scan15 #(
   // After each output pixel enable the next pixel's two source words are read from the single ring RAM on consecutive
   // cycles (the enable is 9 to 10 cycles apart), blended in four registered stages, and held for the next enable.
   logic [3:0]  ph;
-  logic [23:0] a_q, b_q;
+  logic [23:0] a_q;
   logic [2:0]  r_q;
   logic [10:0] sum_r, sum_g, sum_b;
   logic [24:0] mul_r, mul_g, mul_b;
@@ -205,7 +196,7 @@ module m2_scan15 #(
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      ph <= 4'd0; ra <= '0; a_q <= '0; b_q <= '0; r_q <= '0;
+      ph <= 4'd0; ra <= '0; a_q <= '0; r_q <= '0;
       sum_r <= '0; sum_g <= '0; sum_b <= '0; mul_r <= '0; mul_g <= '0; mul_b <= '0; blend <= '0;
     end else begin
       if (ce_out) ph <= 4'd1;
@@ -214,19 +205,18 @@ module m2_scan15 #(
       case (ph)
         4'd1: begin ra <= {s_c[2:0], hcnt[8:0]}; r_q <= r_c; end
         4'd2: ra <= {sb[2:0], hcnt[8:0]};
-        4'd3: a_q <= rd;
-        4'd4: b_q <= rd;
-        4'd5: begin
-          sum_r <= a_q[23:16] * (4'd5 - {1'b0, r_q}) + b_q[23:16] * r_q + 11'd2;
-          sum_g <= a_q[15:8]  * (4'd5 - {1'b0, r_q}) + b_q[15:8]  * r_q + 11'd2;
-          sum_b <= a_q[7:0]   * (4'd5 - {1'b0, r_q}) + b_q[7:0]   * r_q + 11'd2;
+        4'd3: a_q <= rd;                    // row s
+        4'd4: begin                         // rd is row s + 1 now
+          sum_r <= a_q[23:16] * (4'd5 - {1'b0, r_q}) + rd[23:16] * r_q + 11'd2;
+          sum_g <= a_q[15:8]  * (4'd5 - {1'b0, r_q}) + rd[15:8]  * r_q + 11'd2;
+          sum_b <= a_q[7:0]   * (4'd5 - {1'b0, r_q}) + rd[7:0]   * r_q + 11'd2;
         end
-        4'd6: begin
+        4'd5: begin
           mul_r <= sum_r * 14'd3277;      // x 3277 / 16384 = x / 5 to within 1.5e-2 over the whole range
           mul_g <= sum_g * 14'd3277;
           mul_b <= sum_b * 14'd3277;
         end
-        4'd7: blend <= {mul_r[21:14], mul_g[21:14], mul_b[21:14]};
+        4'd6: blend <= {mul_r[21:14], mul_g[21:14], mul_b[21:14]};
         default: ;
       endcase
     end
