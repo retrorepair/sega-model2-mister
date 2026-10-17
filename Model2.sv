@@ -34,7 +34,7 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 // R640: DDRAM is driven by m2_ddr3, beside m2_raster3d below.
 
 assign VGA_SL  = 0;
-assign VGA_F1  = vid_field;   // R682: the interlaced field
+assign VGA_F1  = vid_scan ? sc_fld : vid_field;   // R682: the interlaced field; the converter's when Filled
 assign VGA_SCALER  = 0;
 assign VGA_DISABLE = 0;
 assign HDMI_FREEZE   = 0;
@@ -122,6 +122,11 @@ localparam CONF_STR = {
 	// are longer, so the picture keeps the 15.1 kHz picture's shape on a set
 	// that shows it shorter. No effect at 15.1 kHz or 24 kHz.
 	"O[55],15kHz width,Full,Narrow;",
+	// GunCon work (retrorepair): the 15 kHz picture, 1:1 (the game's 384 lines as two 192-line fields, with the borders and the
+	// flicker that come with it) or Filled: the renderer stays on its native timing and a scan converter (rtl/video/m2_scan15.sv)
+	// outputs 480 interlaced lines, 384 -> 480 by an exact 4:5 blend, at the 262/263-line 15.1 kHz timing whatever the line
+	// count above says. 15 kHz only; no effect at 24 kHz.
+	"O[64],15kHz picture,1 to 1,Filled (15.1kHz);",
 	"-;",
 	// The read capture phase is an OSD option rather than a constant because the
 	// Model 1 core found its board returned every burst shifted right by one
@@ -486,6 +491,11 @@ reg [2:0]  vil_s;                         // the OSD bit, into clk_mem
 wire       vid_il_sel;                    // R795: the OSD bit or the CRT MRA's flag, on clk_sys below
 always @(posedge clk_mem) vil_s <= {vil_s[1:0], vid_il_sel};
 wire       vid_il = vil_s[2];
+// GunCon work: "Filled" 15 kHz. The renderer sees native timing (vid_il_c = 0) and a second enable runs the 15 kHz output.
+reg [2:0]  scn_s;
+always @(posedge clk_mem) scn_s <= {scn_s[1:0], status[64]};
+wire       vid_scan = vid_il & scn_s[2];
+wire       vid_il_c = vid_il & ~vid_scan;
 // R834: 268.5-line fields at 656 pixels: 537 x 656 a frame = 537/5300
 // (10.1321 MHz, 15,445 Hz a line). With the narrow line (m2_video_timing's
 // HM_TOTAL / HI_TOTAL) the same line rate on 672 and 684 pixels:
@@ -508,10 +518,10 @@ wire       vid_ml = vml_s[2];
 wire       vid_nw = vnw_s[2];
 reg [19:0] ce_acc;
 reg        ce_pix;
-wire [19:0] ce_num = !vid_il ? 20'(CE_NUM) : vid_nl ? 20'(CEN_NUM)
+wire [19:0] ce_num = !vid_il_c ? 20'(CE_NUM) : vid_nl ? 20'(CEN_NUM)
                    : vid_ml ? (vid_nw ? 20'(CEMW_NUM) : 20'(CEM_NUM))
                    :          (vid_nw ? 20'(CEIW_NUM) : 20'(CEI_NUM));
-wire [19:0] ce_den = !vid_il ? 20'(CE_DEN) : vid_nl ? 20'(CEN_DEN)
+wire [19:0] ce_den = !vid_il_c ? 20'(CE_DEN) : vid_nl ? 20'(CEN_DEN)
                    : vid_ml ? (vid_nw ? 20'(CEMW_DEN) : 20'(CEM_DEN))
                    :          (vid_nw ? 20'(CEIW_DEN) : 20'(CEI_DEN));
 always @(posedge clk_mem) begin
@@ -522,6 +532,20 @@ always @(posedge clk_mem) begin
 	end else begin
 		ce_acc <= ce_acc + ce_num;
 		ce_pix <= 1'b0;
+	end
+end
+// The Filled output's pixel enable: the 262/263-line timing, 861/8692 of clk_mem (9.9057 MHz), free-running so its phase
+// against ce_pix is fixed for ever (two output fields are exactly two native frames: 3,476,800 clk_mem cycles each way).
+reg [19:0] ceo_acc;
+reg        ce_out;
+always @(posedge clk_mem) begin
+	if (ceo_acc >= 20'(CEN_DEN)) ceo_acc <= 20'd0;
+	else if (ceo_acc + 20'(CEN_NUM) >= 20'(CEN_DEN)) begin
+		ceo_acc <= ceo_acc + 20'(CEN_NUM) - 20'(CEN_DEN);
+		ce_out  <= 1'b1;
+	end else begin
+		ceo_acc <= ceo_acc + 20'(CEN_NUM);
+		ce_out  <= 1'b0;
 	end
 end
 
@@ -6378,7 +6402,7 @@ m2_raster3d #(.SCR_W(496), .SCR_H(384), .BAND_H(8), .NBUF(6), .FTB(1'b1), .FB_DD
 	.q_mipz(q3d_mipz),                                                // R828c
 	.q_tag(r826_wtag), .show_tag(r826_stag),   // R826
 	.scan_clk(clk_mem), .scan_x(vid_x_d), .scan_y(vid_y),   // R564: the video's clock; R779: x one pixel behind
-	.scan_il(vid_il), .scan_field(vid_field),               // R682
+	.scan_il(vid_il_c), .scan_field(vid_field),             // R682
 	.scan_col(r3d_col), .scan_hit(r3d_hit),
 	.dbg_quads(r3d_quads), .dbg_dropped(r3d_dropped), .dbg_tiny(r3d_tiny),
 	.dbg_bands(r3d_bands),
@@ -6474,7 +6498,7 @@ m2_video #(.LB_RING(1'b1), .HSCR_FIX(R826_HSCR), .SCR_SYNC(R826_SYNC),
 	.dbg_hscr(vid_hscr), .dbg_vscr(vid_vscr),
 	.dbg_ovr_frame(vid_ovr_frame),
 	.vid_x(vid_x), .vid_y(vid_y),
-	.interlace(vid_il), .ntsc_lines(vid_nl), .vid_field(vid_field),   // R682, R783
+	.interlace(vid_il_c), .ntsc_lines(vid_nl), .vid_field(vid_field),   // R682, R783
 	.mid_lines(vid_ml), .narrow(vid_nw),                                // R834
 	.dbg_layer_px(vid_layer_px), .dbg_ctrl(vid_ctrl),
 	.dbg_layer_have(vid_layer_have),
@@ -6609,7 +6633,7 @@ generate if (VCOP_GUN) begin : g_xhair
 	m2_vcop_xhair u_vcop_xhair (
 		.clk(clk_mem), .on(vc_con), .size(status[57:56]),
 		.c1x(vc_c1x), .c1y(vc_c1y), .c2x(vc_c2x), .c2y(vc_c2y),
-		.il(vid_il), .vx(vid_x_d), .vy(vid_y),
+		.il(vid_il_c), .vx(vid_x_d), .vy(vid_y),
 		.in_r(mix_r), .in_g(mix_g), .in_b(mix_b),
 		.out_r(mix_r_q), .out_g(mix_g_q), .out_b(mix_b_q)
 	);
@@ -6624,14 +6648,24 @@ assign ov_r = mix_r_q;
 assign ov_g = mix_g_q;
 assign ov_b = mix_b_q;
 
-assign CLK_VIDEO = clk_mem;   // R564: the video runs on the memory clock
-assign CE_PIXEL  = ce_pix;
+// GunCon work: the scan converter between the finished native picture and the pins (rtl/video/m2_scan15.sv).
+wire        sc_hs, sc_vs, sc_de, sc_fld, sc_align;
+wire [23:0] sc_rgb;
+m2_scan15 u_scan15 (
+	.clk(clk_mem), .rst_n(mem_rst_n), .en(vid_scan),
+	.ce_in(ce_pix), .de_in(~(tile_hb | tile_vb)), .vb_in(tile_vb), .rgb_in({ov_r, ov_g, ov_b}),
+	.ce_out(ce_out), .nl(1'b1), .ml(1'b0),
+	.o_hs(sc_hs), .o_vs(sc_vs), .o_de(sc_de), .o_field(sc_fld), .o_rgb(sc_rgb), .dbg_align(sc_align)
+);
 
-assign VGA_DE = ~(tile_hb | tile_vb);
-assign VGA_HS = tile_hs;
-assign VGA_VS = tile_vs;
-assign VGA_R  = ov_r;
-assign VGA_G  = ov_g;
-assign VGA_B  = ov_b;
+assign CLK_VIDEO = clk_mem;   // R564: the video runs on the memory clock
+assign CE_PIXEL  = vid_scan ? ce_out : ce_pix;
+
+assign VGA_DE = vid_scan ? sc_de : ~(tile_hb | tile_vb);
+assign VGA_HS = vid_scan ? sc_hs : tile_hs;
+assign VGA_VS = vid_scan ? sc_vs : tile_vs;
+assign VGA_R  = vid_scan ? sc_rgb[23:16] : ov_r;
+assign VGA_G  = vid_scan ? sc_rgb[15:8]  : ov_g;
+assign VGA_B  = vid_scan ? sc_rgb[7:0]   : ov_b;
 
 endmodule
