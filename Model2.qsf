@@ -442,8 +442,12 @@ set_global_assignment -name SEED 1604
 #enable it only if 8bit indexed mode is used in core
 #set_global_assignment -name VERILOG_MACRO "MISTER_FB_PALETTE=1"
 
-#do not enable DEBUG_NOHDMI in release!
-#set_global_assignment -name VERILOG_MACRO "MISTER_DEBUG_NOHDMI=1"
+# GunCon work (retrorepair): THIS BUILD HAS NO HDMI. The framework's own switch removes the HDMI scaler (ascal, about 2,900 ALUTs), its
+# OSD, shadow mask and PLL adjust, and forces the analog output to come straight from the core's video. It is for CRT use with
+# MiSTer.ini vga_scaler=0 (which the card has); there is no HDMI picture and no scaler screenshot. The 15 kHz scan converter
+# (rtl/video/m2_scan15.sv) needed the room: without this the fit was 6 logic blocks over (4,197 of 4,191). The framework comment
+# says "do not enable in release"; this is a CRT build, not a release of the original core.
+set_global_assignment -name VERILOG_MACRO "MISTER_DEBUG_NOHDMI=1"
 
 # disable bilinear filtering when downscaling
 # ENABLED: ascal is 2,907 ALUTs and these two are cosmetic scaler features with

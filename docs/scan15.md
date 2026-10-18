@@ -105,8 +105,14 @@ converter from the core's own `m2_video_timing` in native mode, encodes (frame, 
   images once the converter has locked (about 18 native frames); with a three-frame cadence the lock never fires, and with a new image
   every frame no pairing is possible.
 
-## Area
+## Area, and why this build has no HDMI
 
-The core is at 99% of the chip. The converter is about 234 logic ALUTs, 6 DSP blocks and 15 memory blocks (the first version, with
-the plain blend and eight lines, was 161 ALUTs and 12 blocks). Whether a seed closes timing is the usual lottery for this design (see
-the README, "Building"); `scripts/scan15_sweep.ps1` in the GunCon repo runs the fitter over several seeds one after another.
+The core is at 99% of the chip. The converter is about 174 ALUTs, 140 registers, 6 DSP blocks and 15 memory blocks (the first version, with
+the plain blend and eight lines, was 134 ALUTs and 201 registers). The smoothing build failed to fit three times, each "Fitter requires N
+LABs ... device contains only 4,191": 4,194, then 4,203 after trimming the converter (the fitter's own speed optimisation moves the count by
+about 10 for small changes), then 4,197 after retiring the 1:1 picture (76 ALMs). Seeds do not help: the count is the same for every seed.
+
+So `Model2.qsf` now sets the framework's `MISTER_DEBUG_NOHDMI`: no HDMI scaler (`ascal`), HDMI OSD, shadow mask or PLL adjust, and the analog
+output comes straight from the core. Synthesis: 40,562 to 36,570 ALMs (about 4,000, 10% of the chip), registers 49,415 to 42,347, DSP blocks
+94 to 81. The cost is that there is no HDMI picture and no scaler screenshot; the CRT path is untouched (`vga_scaler=0`, `composite_sync=1`,
+`vga_mode=rgb` in the card's MiSTer.ini). The framework labels the switch "do not enable in release"; this is a CRT build.
