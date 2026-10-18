@@ -34,7 +34,7 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 // R640: DDRAM is driven by m2_ddr3, beside m2_raster3d below.
 
 assign VGA_SL  = 0;
-assign VGA_F1  = vid_scan ? sc_fld : vid_field;   // R682: the interlaced field; the converter's when Filled
+assign VGA_F1  = vid_scan & sc_fld;   // the interlaced field: the converter's at 15 kHz, 0 at 24 kHz (progressive)
 assign VGA_SCALER  = 0;
 assign VGA_DISABLE = 0;
 assign HDMI_FREEZE   = 0;
@@ -102,35 +102,15 @@ localparam CONF_STR = {
 	// shown instead, so the OSD tells the truth without writing status back.
 	"H0O[42],Video,Native 24kHz,15kHz interlaced;",
 	"h0O[42],Video,15kHz (CRT MRA),15kHz (CRT MRA);",
-	// R783: the 15 kHz field's line count. 273.5 keeps the 15.73 kHz line;
-	// 262.5 is NTSC's count at a 15.10 kHz line, for sets that lose sync on
-	// 273.5. Game speed and picture are the same either way.
-	// R799: 262/263 first, the default (Ben: it fixes the alignment on his
-	// set); labelled by the fields' own line counts, no half line.
-	// R834: and 268/269 (15.4kHz) between them, for sets that take neither
-	// end. O[45:44] so a saved 273/274 (bit 45) still opens as 273/274 --
-	// a set that needed it cannot show the OSD to set it again. Bit 44 was
-	// "Every 3rd frame"'s (R831); a config holding both reads as 273/274.
-	// R840: 273/274 (15.7kHz) IS THE DEFAULT (Ben: most users' sets only take
-	// 15.7 kHz, and a [15kHz CRT] MRA that starts at a rate the set cannot
-	// show leaves its owner no OSD to change it). New bits, O[61:60], so every
-	// saved config -- including the old default's 262/263 -- opens at 15.7;
-	// O[45:44] is retired. A set that needs 15.1 kHz (Ben's JVC, R799) picks
-	// it once.
-	"O[61:60],15kHz lines,273/274 (15.7kHz),268/269 (15.4kHz),262/263 (15.1kHz);",
-	// R834: Narrow lengthens the 15.4/15.7 kHz line in the ratio their fields
-	// are longer, so the picture keeps the 15.1 kHz picture's shape on a set
-	// that shows it shorter. No effect at 15.1 kHz or 24 kHz.
-	"O[55],15kHz width,Full,Narrow;",
-	// GunCon work (retrorepair): the 15 kHz picture, 1:1 (the game's 384 lines as two 192-line fields, with the borders and the
-	// flicker that come with it) or Filled: the renderer stays on its native timing and a scan converter (rtl/video/m2_scan15.sv)
-	// outputs 480 interlaced lines, 384 -> 480 by an exact 4:5 blend, at the 262/263-line 15.1 kHz timing whatever the line
-	// count above says. 15 kHz only; no effect at 24 kHz.
-	"O[64],15kHz picture,1 to 1,Filled (15.1kHz);",
-	// Filled only: the vertical low-pass that gives a one-row line equal light in both fields (no 29 Hz flicker), at the cost of a
+	// GunCon work (retrorepair): THE 1:1 15 kHz PICTURE IS RETIRED. 15 kHz is now always the Filled picture: the renderer stays on
+	// its native 24 kHz timing and a scan converter (rtl/video/m2_scan15.sv) outputs 480 interlaced lines at the 262/263-line
+	// 15.1 kHz timing, 384 -> 480 by an exact 4:5 blend. The options that only the 1:1 picture had -- "15kHz lines" (273/274,
+	// 268/269, 262/263), "15kHz width" (Narrow) and "15kHz picture" (1 to 1, Filled) -- are gone with it, and the renderer's own
+	// interlace path is tied off (vid_il_c below) so the synthesis removes it: it was the area the converter's smoothing needed.
+	// 15 kHz only: the vertical low-pass that gives a one-row line equal light in both fields (no 29 Hz flicker), at the cost of a
 	// little vertical softness; Off is the plain 4:5 blend.
 	"O[65],Vertical smoothing,On,Off;",
-	// Filled only: which field carries the odd rows. Normal puts the even rows on the field whose vsync is aligned to a line.
+	// 15 kHz only: which field carries the odd rows. Normal puts the even rows on the field whose vsync is aligned to a line.
 	"O[66],Field order,Normal,Swapped;",
 	"-;",
 	// The read capture phase is an OSD option rather than a constant because the
@@ -496,13 +476,14 @@ reg [2:0]  vil_s;                         // the OSD bit, into clk_mem
 wire       vid_il_sel;                    // R795: the OSD bit or the CRT MRA's flag, on clk_sys below
 always @(posedge clk_mem) vil_s <= {vil_s[1:0], vid_il_sel};
 wire       vid_il = vil_s[2];
-// GunCon work: "Filled" 15 kHz. The renderer sees native timing (vid_il_c = 0) and a second enable runs the 15 kHz output.
-reg [2:0]  scn_s, flt_s, swp_s;
+// GunCon work: 15 kHz is always the "Filled" picture. The renderer sees native timing (vid_il_c is a constant 0, so the synthesis
+// removes its own interlace path) and a second enable runs the 15 kHz output.
+reg [2:0]  flt_s, swp_s;
 always @(posedge clk_mem) begin
-	scn_s <= {scn_s[1:0], status[64]}; flt_s <= {flt_s[1:0], status[65]}; swp_s <= {swp_s[1:0], status[66]};
+	flt_s <= {flt_s[1:0], status[65]}; swp_s <= {swp_s[1:0], status[66]};
 end
-wire       vid_scan = vid_il & scn_s[2];
-wire       vid_il_c = vid_il & ~vid_scan;
+wire       vid_scan = vid_il;
+wire       vid_il_c = 1'b0;
 // R834: 268.5-line fields at 656 pixels: 537 x 656 a frame = 537/5300
 // (10.1321 MHz, 15,445 Hz a line). With the narrow line (m2_video_timing's
 // HM_TOTAL / HI_TOTAL) the same line rate on 672 and 684 pixels:

@@ -79,9 +79,14 @@ native lines.
 
 ## OSD
 
-- `15kHz picture: 1 to 1 / Filled (15.1kHz)`, status bit 64. No effect at 24 kHz. Default 1 to 1 (the existing behaviour).
-- `Vertical smoothing: On / Off`, bit 65. Filled only.
-- `Field order: Normal / Swapped`, bit 66. Filled only.
+15 kHz is now always the Filled picture. The 1:1 picture and the options that only it had (`15kHz lines`, `15kHz width`, `15kHz picture`) are
+gone, and the renderer's own interlace path is tied off (`vid_il_c` is a constant 0), so the synthesis removes it. That was done to make
+room: the smoothing build needed 4,203 logic blocks of 4,191 and the first and second fits failed on it. Synthesis says the retirement frees
+76 ALMs (40,638 to 40,562) and 25 registers, which is less than hoped.
+
+- `Vertical smoothing: On / Off`, bit 65. 15 kHz only.
+- `Field order: Normal / Swapped`, bit 66. 15 kHz only.
+- `Video: Native 24kHz / 15kHz interlaced` (bit 42, or the CRT MRA's flag) picks the output as before.
 
 ## Verification
 
