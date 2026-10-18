@@ -66,6 +66,7 @@ module m2_scan15 #(
   input  logic        filt,            // vertical low-pass (flicker filter) on; off = the plain 4:5 blend
   input  logic        swp,             // field order swapped: the field with the aligned vsync shows the odd rows
   input  logic  [3:0] img_tag,         // names the image on show (the renderer's show_tag); asynchronous, changes in vertical blank
+  input  logic        beacon,          // light-gun beacon: while high (a level, asynchronous) whole fields of the picture are shown white, a few at most
 
   // the native picture, sampled on ce_in
   input  logic        ce_in,
@@ -192,12 +193,22 @@ module m2_scan15 #(
   wire  [4:0] p_a   = {1'b0, p} + {4'd0, top ? 1'b0 : 1'b1} + {4'd0, rc};
   wire  [3:0] p_n   = (p_a >= 5'd12) ? 4'(p_a - 5'd12) : 4'(p_a);
 
+  // BEACON. A CRT gun reads only where there is light, and a dark enemy or dark patch gives it nothing. The arcade cabinet's gun board put
+  // its own flash into the video path; this is that flash. The app holds `beacon` high from a trigger pull until it has measured the aim (about
+  // 55 ms: the first lit report after darkness has a junk Y, so the flash must last a few fields). Whole fields only, so the picture is never
+  // torn, and BC_MAXF of them at most whatever the app does.
+  localparam int unsigned BC_MAXF = 6;
+  logic [2:0] bc_s;
+  logic       bc_on;
+  logic [2:0] bc_cnt;
+  always_ff @(posedge clk) bc_s <= {bc_s[1:0], beacon};
+
   wire        align = fs_even && en;
   assign dbg_align = align;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      hcnt <= '0; vcnt <= '0; field <= 1'b0; p <= '0; r_c <= '0;
+      hcnt <= '0; vcnt <= '0; field <= 1'b0; p <= '0; r_c <= '0; bc_on <= 1'b0; bc_cnt <= '0;
     end else if (align) begin
       // the counters the free-running output would hold at this instant, once locked
       field <= 1'b1;
@@ -209,6 +220,8 @@ module m2_scan15 #(
         if (vcnt == vt - 10'd1) begin
           vcnt  <= '0;
           field <= ~field;
+          bc_on <= bc_s[2] && (bc_cnt != 3'(BC_MAXF));          // the field about to start is a white one
+          bc_cnt <= bc_s[2] ? ((bc_cnt != 3'(BC_MAXF)) ? bc_cnt + 3'd1 : bc_cnt) : 3'd0;
           p     <= '0;
           r_c   <= (field ^ swp) ? 3'd0 : 3'd4;   // the field about to start: the odd rows' field starts on frame row 1 (4j = 4)
         end else begin
@@ -300,7 +313,7 @@ module m2_scan15 #(
       o_vs    <= en && vs_c;
       o_de    <= en && de_c;
       o_field <= field;
-      o_rgb   <= (en && de_c) ? blend : 24'd0;
+      o_rgb   <= (en && de_c) ? (bc_on ? 24'hFFFFFF : blend) : 24'd0;
     end
   end
 

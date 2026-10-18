@@ -107,11 +107,9 @@ localparam CONF_STR = {
 	// 15.1 kHz timing, 384 -> 480 by an exact 4:5 blend. The options that only the 1:1 picture had -- "15kHz lines" (273/274,
 	// 268/269, 262/263), "15kHz width" (Narrow) and "15kHz picture" (1 to 1, Filled) -- are gone with it, and the renderer's own
 	// interlace path is tied off (vid_il_c below) so the synthesis removes it: it was the area the converter's smoothing needed.
-	// 15 kHz only: the vertical low-pass that gives a one-row line equal light in both fields (no 29 Hz flicker), at the cost of a
-	// little vertical softness; Off is the plain 4:5 blend.
-	"O[65],Vertical smoothing,On,Off;",
-	// 15 kHz only: which field carries the odd rows. Normal puts the even rows on the field whose vsync is aligned to a line.
-	"O[66],Field order,Normal,Swapped;",
+	// Light-gun beacon (see rtl/video/m2_scan15.sv): when Main_MiSTer asks (a GunCon 2 trigger pull, joystick_3 bit 0) the whole picture is shown
+	// white for a few fields so a CRT gun can find its aim anywhere, dark enemies included. There is no OSD switch: the app is what asks, and a
+	// core that did not answer would make it call every shot a reload. LIGHTGUN_CRT_BEACON=0 in MiSTer.ini turns the asking off.
 	"-;",
 	// The read capture phase is an OSD option rather than a constant because the
 	// Model 1 core found its board returned every burst shifted right by one
@@ -338,6 +336,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 	.ioctl_dout(ioctl_dout),
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),             // R839: Virtua Cop's second gun
+	.joystick_3(joystick_3),             // GunCon beacon request: bit 0 (Main_MiSTer user_io_joystick_word)
 	.joystick_l_analog_0(joy_analog),
 	.joystick_l_analog_1(joy_analog_1),
 	.ps2_mouse(ps2_mouse),
@@ -359,6 +358,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 
 wire [31:0] joystick_0;
 wire [31:0] joystick_1;     // R839
+wire [31:0] joystick_3;     // the light-gun beacon request
 wire [15:0] joy_analog;
 wire [15:0] joy_analog_1;   // R839
 wire [24:0] ps2_mouse;      // R839
@@ -478,10 +478,6 @@ always @(posedge clk_mem) vil_s <= {vil_s[1:0], vid_il_sel};
 wire       vid_il = vil_s[2];
 // GunCon work: 15 kHz is always the "Filled" picture. The renderer sees native timing (vid_il_c is a constant 0, so the synthesis
 // removes its own interlace path) and a second enable runs the 15 kHz output.
-reg [2:0]  flt_s, swp_s;
-always @(posedge clk_mem) begin
-	flt_s <= {flt_s[1:0], status[65]}; swp_s <= {swp_s[1:0], status[66]};
-end
 wire       vid_scan = vid_il;
 wire       vid_il_c = 1'b0;
 // R834: 268.5-line fields at 656 pixels: 537 x 656 a frame = 537/5300
@@ -6640,7 +6636,7 @@ assign ov_b = mix_b_q;
 wire        sc_hs, sc_vs, sc_de, sc_fld, sc_align;
 wire [23:0] sc_rgb;
 m2_scan15 u_scan15 (
-	.clk(clk_mem), .rst_n(mem_rst_n), .en(vid_scan), .filt(~flt_s[2]), .swp(swp_s[2]), .img_tag(r826_stag),
+	.clk(clk_mem), .rst_n(mem_rst_n), .en(vid_scan), .filt(1'b0), .swp(1'b0), .img_tag(r826_stag), .beacon(joystick_3[0]),
 	.ce_in(ce_pix), .de_in(~(tile_hb | tile_vb)), .vb_in(tile_vb), .rgb_in({ov_r, ov_g, ov_b}),
 	.ce_out(ce_out), .nl(1'b1), .ml(1'b0),
 	.o_hs(sc_hs), .o_vs(sc_vs), .o_de(sc_de), .o_field(sc_fld), .o_rgb(sc_rgb), .dbg_align(sc_align)

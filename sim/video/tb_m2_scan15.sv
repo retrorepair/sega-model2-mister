@@ -5,7 +5,7 @@
 // Build and run from the repo root (WSL):
 //   $ sim/video/run_scan15.sh [mode] [D_PX] [frames] [filt]
 // Plusargs: mode=0 273/274 lines, 1 = 268/269, 2 = 262/263; frames=N native frames (default 14); filt=0/1 flicker filter;
-// swp=0/1 field order; cad=N the game shows a new image every N native frames (0 = never), ph=P at the frames where
+// bc=1 raise the beacon for about four fields part way through (the picture must be white for whole fields, then normal again); swp=0/1 field order; cad=N the game shows a new image every N native frames (0 = never), ph=P at the frames where
 // frame mod N == P (the converter must pair the fields so the changes land on the first field of a frame).
 //
 // Checks: output timing (hsync 64 px, 496 visible, equal vsync intervals), that the output row on show steps through the
@@ -19,7 +19,7 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
   always #5 clk = ~clk;                     // 100 MHz
   logic rst_n = 1'b0;
 
-  int mode, nframes, filt_i, swp_i, cad, cph;
+  int mode, nframes, filt_i, swp_i, cad, cph, bc_i;
   logic nl, ml, filt, swp;
   initial begin
     if (!$value$plusargs("mode=%d", mode)) mode = 0;
@@ -28,6 +28,7 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
     if (!$value$plusargs("swp=%d", swp_i)) swp_i = 0;
     if (!$value$plusargs("cad=%d", cad)) cad = 2;
     if (!$value$plusargs("ph=%d", cph)) cph = 0;
+    if (!$value$plusargs("bc=%d", bc_i)) bc_i = 0;
     nl = (mode == 2);
     ml = (mode == 1);
     filt = (filt_i != 0);
@@ -79,11 +80,20 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
   // ---- the device under test
   logic o_hs, o_vs, o_de, o_field, dbg_align;
   logic [23:0] o_rgb;
-  m2_scan15 #(.D_PX(DPX)) dut (.clk(clk), .rst_n(rst_n), .en(1'b1), .filt(filt), .swp(swp), .img_tag(tag), .ce_in(ce_in), .de_in(de_s), .vb_in(vb_s),
+  m2_scan15 #(.D_PX(DPX)) dut (.clk(clk), .rst_n(rst_n), .en(1'b1), .filt(filt), .swp(swp), .img_tag(tag), .beacon(bcn), .ce_in(ce_in), .de_in(de_s), .vb_in(vb_s),
                  .rgb_in(rgb_s), .ce_out(ce_out), .nl(nl), .ml(ml), .o_hs(o_hs), .o_vs(o_vs), .o_de(o_de), .o_field(o_field),
                  .o_rgb(o_rgb), .dbg_align(dbg_align));
 
+  logic bcn = 1'b0;
   initial begin #200 rst_n = 1'b1; end
+  initial begin
+    wait (rst_n);
+    if (bc_i != 0) begin
+      wait (frame >= 8'd36);
+      #1234567 bcn = 1'b1;                    // an arbitrary instant
+      #69000000 bcn = 1'b0;                   // about four fields
+    end
+  end
 
   // ---- the expected picture, from first principles
   // B(m): the source sampled at row 4m/5 with a linear blend, as five times its value: (5 - f) * R[row] + f * R[row + 1],
@@ -121,6 +131,8 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
   logic [7:0] pr, pg, pb;
   logic       pvis = 0;
   logic [7:0] cur_f = 8'd0;
+  int         bc_white = 0, bc_bad = 0, bc_fields = 0;
+  logic       pbc = 1'b0, bc_prev = 1'b0;
   int         pairs = 0, pair_bad = 0;
   logic [3:0] last_a = 4'd0;
   logic       a_ok = 1'b0;
@@ -199,9 +211,11 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
     end
 
     // the output latches the pixel prepared in the previous period on every enable
-    if (ce_out) begin pr = exp_r; pg = exp_g; pb = exp_b; pvis = exp_vis; exp_vis = 1'b0; end
+    if (ce_out) begin pr = exp_r; pg = exp_g; pb = exp_b; pvis = exp_vis; exp_vis = 1'b0; pbc = dut.bc_on; end
     if (ce_out_d) begin
-      if (o_de && warm) begin
+      if (o_de && warm && pbc) begin
+        if (o_rgb === 24'hFFFFFF) bc_white++; else bc_bad++;                      // a beacon field is white, all of it
+      end else if (o_de && warm) begin
         checked++;
         if (!pvis || o_rgb !== {pr, pg, pb}) begin
           fails++;
@@ -209,6 +223,8 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
         end
       end
       o_hs_d <= o_hs; o_vs_d <= o_vs; o_de_d <= o_de;
+      if (pbc && !bc_prev) bc_fields++;
+      bc_prev = pbc;
       if (o_hs) hs_w++; else begin if (hs_w > hs_max) hs_max = hs_w; hs_w = 0; end
       if (o_de) de_w++; else begin if (de_w > de_max) de_max = de_w; de_w = 0; end
       if (o_de && !o_de_d) de_lines++;
@@ -228,11 +244,13 @@ module tb_m2_scan15 #(parameter int DPX = 1660);
     $display("mode %0d (%s): %0d native frames, filter %0d", mode, nl ? "262/263" : ml ? "268/269" : "273/274", frame, filt_i);
     $display("  pixels checked %0d, blend mismatches %0d, ring mismatches %0d, row-step mismatches %0d", checked, fails, ring_fails, step_fails);
     $display("  hsync width %0d px, visible width %0d px, vsyncs %0d", hs_max, de_max, vs_seen);
+    if (bc_i != 0) $display("  beacon: %0d white pixels (%0d fields of 119040), %0d not white, bc_on at the end %0d", bc_white, bc_white / 119040, bc_bad, dut.bc_on);
     $display("  image cadence %0d phase %0d, field order swapped %0d: output frames %0d, made of two images %0d", cad, cph, swp_i, pairs, pair_bad);
     for (int i = 1; i < nint; i++) $display("  vsync interval %0d: %0d ns (native frame = 17384000 ns)", i, vs_int[i]);
     $display("  margin before the data is written (smallest, ns): %0d   margin before it is overwritten (smallest, ns): %0d",
              min_avail, min_over);
     if (fails == 0 && ring_fails == 0 && step_fails == 0 && checked > 100000 && hs_max == 64 && de_max == 496 &&
+        !(bc_i != 0 && (bc_bad != 0 || bc_white < 3 * 119040 || bc_white > 6 * 119040 || dut.bc_on)) &&
         !(cad == 2 && nframes >= 70 && (pairs < 10 || pair_bad != 0))) $display("PASS");
     else $display("FAIL");
     $finish;
