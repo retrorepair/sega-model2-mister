@@ -18,6 +18,22 @@ you need one.
 You supply the ROMs. They go in `/media/fat/games/mame/`, named the way the
 MRA expects. Nothing in this folder contains ROM data.
 
+## CRT / scan-converter build (retrorepair, 2026-10-18) -- `Model2_20261018_crt_scan15.rbf`
+
+Not the release above: a build for a 15 kHz CRT, from branch `guncon-scan15`, made for GunCon 2 light-gun work on Virtua Cop. Copy it next to the
+release rbf and use it the same way (or rename it to `Model2.rbf`).
+
+- **15 kHz is always the "Filled" picture.** The renderer stays on its native 24 kHz timing and a scan converter (`rtl/video/m2_scan15.sv`) outputs
+  480 interlaced lines at 15.1 kHz (262/263 lines), the game's 384 lines scaled 4:5, with no frame of delay. The 1:1 15 kHz picture and the
+  `15kHz lines`, `15kHz width` and `15kHz picture` options are gone. 24 kHz is unchanged.
+- **OSD:** `Vertical smoothing` On/Off (a 1/4-1/2-1/4 vertical filter so a one-row line has equal light in both fields: far less 29 Hz flicker) and
+  `Field order` Normal/Swapped.
+- **Pairing:** the converter watches the renderer's image change and pairs the two fields of an output frame to one game image, so moving things
+  are not combed.
+- **No HDMI.** `MISTER_DEBUG_NOHDMI` removes the framework's scaler (about 4,000 ALMs) because the converter did not otherwise fit (three fits failed at
+  4,194 / 4,203 / 4,197 LABs of 4,191). Analog output only; needs `vga_scaler=0`; no scaler screenshots. 36,860 of 41,910 ALMs, all clocks pass.
+- Design, verification (a bit-exact bench) and numbers: `docs/scan15.md`.
+
 ## ROMs
 
 | zip | for |
