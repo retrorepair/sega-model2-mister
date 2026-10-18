@@ -1,0 +1,100 @@
+From 607366d0ed7339b688060f00fb0debdfddc0a616 Mon Sep 17 00:00:00 2001
+From: retrorepair <joelwhybrow@googlemail.com>
+Date: Sun, 18 Oct 2026 22:53:27 +0100
+Subject: [PATCH 15/15] input: a lit report with a Y above the picture is not an aim
+ (the first report after the game's black flash frame)
+
+Virtua Cop's shot flash is one black frame. The first lit report after it has the right X and Y = 5, a line above the picture. Taken as an aim it
+threw the held position to the top edge exactly when the game read it, and, as the 'last light' it left an edge-zone position behind that
+read as the gun leaving the screen. Readings more than 4% of the span outside the calibrated picture, on either axis, now count as no light.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ lightgun_crt.cpp           |  2 +-
+ lightgun_crt.h             | 17 +++++++++++++++--
+ test/lightgun_crt_test.cpp | 24 ++++++++++++++++++++++++
+ 3 files changed, 40 insertions(+), 3 deletions(-)
+
+diff --git a/lightgun_crt.cpp b/lightgun_crt.cpp
+index 1ae5832..4443dfd 100644
+--- a/lightgun_crt.cpp
++++ b/lightgun_crt.cpp
+@@ -23,7 +23,7 @@ void crtgun_set_axis(crtgun_state *s, bool is_x, int32_t value, const crtgun_par
+ 		return;
+ 	}
+ 
+-	if (p && p->ymax >= CRTGUN_Y_WRAP && value >= 0 && crtgun_valid(s, p) && value <= p->ymax - CRTGUN_Y_WRAP + CRTGUN_Y_WRAP_SLACK)
++	if (p && p->ymax >= CRTGUN_Y_WRAP && value >= 0 && crtgun_lit(s, p) && value <= p->ymax - CRTGUN_Y_WRAP + CRTGUN_Y_WRAP_SLACK)
+ 		value += CRTGUN_Y_WRAP;
+ 	s->raw_y = value;
+ }
+diff --git a/lightgun_crt.h b/lightgun_crt.h
+index 5834d7d..015ab7b 100644
+--- a/lightgun_crt.h
++++ b/lightgun_crt.h
+@@ -90,10 +90,23 @@ void crtgun_update(crtgun_state *s, const crtgun_params *p, uint32_t now_ms);
+ // ... and call this at the end of each complete gun report (the SYN event): it also feeds the flash measurement.
+ void crtgun_report(crtgun_state *s, const crtgun_params *p, uint32_t now_ms);
+ 
+-// True if the raw X means the gun sees light.
+-static inline bool crtgun_valid(const crtgun_state *s, const crtgun_params *p)
++// True if the gun reports light at all (raw X at or above the "no light" level).
++static inline bool crtgun_lit(const crtgun_state *s, const crtgun_params *p)
+ {
+ 	return s->raw_x >= p->x_valid_min;
+ }
+ 
++// A reading that is lit AND could be a place on the picture. The first report after a blackout (the game's shot flash is one black
++// frame) comes with the right X but Y = 5, a line above the top of the picture where nothing is drawn: it is not an aim, and taken as one
++// it threw the aim to the top edge at the very moment the game read it. Anything more than CRTGUN_RANGE_SLACK_PCT of the span outside the
++// calibrated picture, on either axis, is rejected as if there were no light.
++#define CRTGUN_RANGE_SLACK_PCT 4
++static inline bool crtgun_valid(const crtgun_state *s, const crtgun_params *p)
++{
++	if (!crtgun_lit(s, p)) return false;
++	int32_t mx = (int32_t)(((int64_t)(p->xmax - p->xmin) * CRTGUN_RANGE_SLACK_PCT) / 100);
++	int32_t my = (int32_t)(((int64_t)(p->ymax - p->ymin) * CRTGUN_RANGE_SLACK_PCT) / 100);
++	return s->raw_x >= p->xmin - mx && s->raw_x <= p->xmax + mx && s->raw_y >= p->ymin - my && s->raw_y <= p->ymax + my;
++}
++
+ #endif
+diff --git a/test/lightgun_crt_test.cpp b/test/lightgun_crt_test.cpp
+index e8793c7..ac6e93a 100644
+--- a/test/lightgun_crt_test.cpp
++++ b/test/lightgun_crt_test.cpp
+@@ -263,8 +263,32 @@ static void test_wrapped_y_is_restored_when_the_picture_reaches_past_255()
+ 	CHECK(r2.s.raw_y == 5);
+ }
+ 
++// The first report after the game's black flash frame has the right X but Y = 5, a line above the picture: not an aim.
++static void test_the_report_after_the_black_frame_is_not_an_aim()
++{
++	Rig r;
++	r.report(1000, 400, 130);
++	r.trigger(1010, true);
++	r.report(1040, 0, 143);                           // the black frame
++	r.report(1057, 400, 5);                           // right X, Y above the picture
++	CHECK(r.s.out_x == 400 && r.s.out_y == 130);      // still the aim from before: the junk report was ignored
++	r.report(1074, 402, 131);
++	CHECK(r.s.out_x == 402 && r.s.out_y == 131);
++
++	Rig q(&P1);                                       // flash mode: a dark scene, so the flash readings ARE the measurement
++	q.report(1000, 300, 100);
++	q.trigger(1010, true);
++	q.report(1040, 0, 143);
++	q.report(1057, 300, 5);                           // not counted as the first flash reading
++	q.report(1074, 302, 101);
++	q.report(1091, 303, 102);
++	q.report(1108, 301, 100);
++	CHECK(q.s.pub_x == 302 && q.s.pub_y == 101 && !q.s.pub_off);
++}
++
+ int main()
+ {
++	test_the_report_after_the_black_frame_is_not_an_aim();
+ 	test_wrapped_y_is_restored_when_the_picture_reaches_past_255();
+ 	test_tracking_passes_through();
+ 	test_never_seen_light_is_offscreen();
+-- 
+2.53.0.windows.1
+

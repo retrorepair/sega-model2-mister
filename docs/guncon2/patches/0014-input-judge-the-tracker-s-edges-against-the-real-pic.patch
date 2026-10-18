@@ -1,0 +1,244 @@
+From e1a66eef2c48bc0f2dfbb474241ae44835faf7e4 Mon Sep 17 00:00:00 2001
+From: retrorepair <joelwhybrow@googlemail.com>
+Date: Sun, 18 Oct 2026 21:41:43 +0100
+Subject: [PATCH] input: judge the tracker's edges against the real picture,
+ and keep the Model 2 aim exact
+
+The tracker took its edges from the core's gun window, so for the Model 2 core (whose window reached 33 raw units past the picture) the
+'gun left the screen' zone shrank to a few raw units inside the visible picture and a quick shot off the screen read as a dark frame:
+reload needed two pulls. It now uses the picture's own edges; the window (and so the range the core is given) is separate.
+
+The Model 2 off-screen strip (5% of the gun's range at each end) was handled by squeezing the whole picture into the rest of the stick range,
+which put the game's aim up to 5% off toward the edges. It is now an inset: an aim inside the strip is moved to its edge, everything else
+is mapped exactly (guncal_inset_range), and only a real off-screen shot goes into the strip.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ guncal.cpp           | 10 +++++++
+ guncal.h             |  8 ++++++
+ input.cpp            | 65 +++++++++++++++++++++++++++++++-------------
+ test/guncal_test.cpp | 24 ++++++++++++++++
+ 4 files changed, 88 insertions(+), 19 deletions(-)
+
+diff --git a/guncal.cpp b/guncal.cpp
+index 0a14b28..207e650 100644
+--- a/guncal.cpp
++++ b/guncal.cpp
+@@ -288,3 +288,13 @@ uint32_t guncal_raw_word(int x, int y, int trig)
+ {
+ 	return ((uint32_t)x & 0xFFF) | (((uint32_t)y & 0xFFF) << 12) | ((uint32_t)(trig ? 1 : 0) << 24);
+ }
++
++void guncal_inset_range(const int e[4], double pct, int out[4])
++{
++	double my = (e[1] - e[0]) * pct / 100.0;
++	double mx = (e[3] - e[2]) * pct / 100.0;
++	out[0] = (int)ceil(e[0] + my);
++	out[1] = (int)floor(e[1] - my);
++	out[2] = (int)ceil(e[2] + mx);
++	out[3] = (int)floor(e[3] - mx);
++}
+diff --git a/guncal.h b/guncal.h
+index bf79067..748d43b 100644
+--- a/guncal.h
++++ b/guncal.h
+@@ -78,6 +78,11 @@ struct guncal_core_timing
+ 	// core scales it over its PPU's own dots and scanlines, which sit at an offset inside the picture it outputs.
+ 	int    has_window;
+ 	double wx0, wx1, wy0, wy1;
++	// Some cores flag a gun as OFF-SCREEN when it is within a few percent of its range of either end (the Sega Model 2 I/O board:
++	// 5%), which would make that strip of the picture a dead zone. inset_pct is that strip, 0 for none. An aim inside it is moved
++	// to its inner edge (guncal_inset_range) so only a real shot off the screen goes into it, and nothing in the rest of the
++	// picture is moved at all.
++	double inset_pct;
+ };
+ 
+ // Where the GunCal core puts things relative to its sync pulses: the picture starts 94 pixels (of 100 ns) after HSync
+@@ -89,6 +94,9 @@ struct guncal_core_timing
+ // Returns 0 if the timing or the fit is unusable.
+ int guncal_core_edges(const guncal_fit *f, const guncal_core_timing *t, int out[4]);
+ 
++// The range an on-screen aim is kept within: e shrunk by pct percent of its span at each end. Same order as e: { y_top, y_bottom, x_left, x_right }.
++void guncal_inset_range(const int e[4], double pct, int out[4]);
++
+ // ---- the sequence ----
+ 
+ enum { GCS_MONITOR = 0, GCS_AIM, GCS_COLLECT, GCS_VERIFY };
+diff --git a/input.cpp b/input.cpp
+index dd832a6..8080a8c 100644
+--- a/input.cpp
++++ b/input.cpp
+@@ -1482,7 +1482,10 @@ typedef struct
+ 	uint8_t  has_kbdmap;
+ 	uint8_t  kbdmap[256];
+ 
+-	int32_t  guncal[4];
++	int32_t  guncal[4];                          // the range the core scales the gun over (what the core is given)
++	int32_t  guncal_pic[4];                      // where the picture really is, for the tracker; valid when has_pic
++	int32_t  guncal_inset[4];                    // the range an on-screen aim is kept within (the core's own off-screen strip left out)
++	int      has_pic;
+ 	int      guncal_file;                        // guncal[] came from a per-core calibration file
+ 	guncal_fit uni;                              // the gun's universal calibration (GunCal core), if any
+ 	int      uni_valid;
+@@ -2154,15 +2157,14 @@ static void megadrive_gun_window(guncal_core_timing *t)
+ // must lie outside the picture instead of eating its edges. From the core's own arithmetic (stick u = 0..255 -> pixel u*496/256 ->
+ // game units, off-screen when X <= 0x09b or >= 0x25e, Y <= 0x037 or >= 0x196) the on-screen sticks are u = 13..243 for X and
+ // 13..242 for Y: the picture's first and last column / row are put on those, and the window extends past the picture by the rest.
++// The Model 2 I/O board (m2_vcop_guns.sv, from MAME's model1io2 fpga_r) flags a gun off-screen when it is within 5% of its range of
++// either end, and the core scales the stick over the whole 496 x 384 picture, so aiming at the outer strip of the picture reads as
++// a shot off the screen. Stick values 13..242 of 0..255 are the ones that stay on the screen in both axes (X units 24 / Y units 19 of
++// the game's ranges). An aim in the strip is moved to its edge; the picture is NOT squeezed into the rest, so everywhere else the
++// game aims exactly where the gun does.
+ static void model2_gun_window(guncal_core_timing *t)
+ {
+-	const double xlo = 13, xhi = 243, ylo = 13, yhi = 242;
+-	double w = t->width - 1, h = t->height - 1;
+-	t->wx0 = -xlo * w / (xhi - xlo);
+-	t->wx1 = w + (255 - xhi) * w / (xhi - xlo);
+-	t->wy0 = -ylo * h / (yhi - ylo);
+-	t->wy1 = h + (255 - yhi) * h / (yhi - ylo);
+-	t->has_window = 1;
++	t->inset_pct = 13.0 * 100.0 / 255.0;
+ }
+ 
+ // Record what the framework measured of the running core's video (one line per change). This is what the mapping below
+@@ -2199,7 +2201,11 @@ static void guncal_log_video(const char *core, const VideoInfo *v)
+ // universal calibration and the core's measured video timing. See guncal.h. Recomputed when the timing changes.
+ static void guncal_apply_universal(int i)
+ {
+-	if (!input[i].uni_valid || input[i].guncal_file) return;
++	if (!input[i].uni_valid || input[i].guncal_file)
++	{
++		input[i].has_pic = 0;
++		return;
++	}
+ 
+ 	const char *core = user_io_get_core_name();      // an arcade game's MRA set name once loaded, else the core's own name
+ 	const char *board = user_io_get_core_name(1);    // the core's own name
+@@ -2252,13 +2258,18 @@ static void guncal_apply_universal(int i)
+ 	if (sig == input[i].uni_sig) return;
+ 	input[i].uni_sig = sig;
+ 
+-	int e[4];
+-	if (guncal_core_edges(&input[i].uni, &t, e))
++	int e[4], ep[4];
++	guncal_core_timing tp = t;
++	tp.has_window = 0;
++	if (guncal_core_edges(&input[i].uni, &t, e) && guncal_core_edges(&input[i].uni, &tp, ep))
+ 	{
+ 		input[i].guncal[0] = e[0];
+ 		input[i].guncal[1] = e[1];
+ 		input[i].guncal[2] = e[2];
+ 		input[i].guncal[3] = e[3];
++		for (int k = 0; k < 4; k++) input[i].guncal_pic[k] = ep[k];     // the tracker judges edges against the real picture, not the mapping window
++		input[i].has_pic = 1;
++		guncal_inset_range(e, t.inset_pct, input[i].guncal_inset);
+ 		printf("GunCal: %s picture %dx%d, edges from the universal calibration: x %d..%d, y %d..%d\n", core, t.width, t.height, e[2], e[3], e[0], e[1]);
+ 
+ 		FILE *lf = fopen("/tmp/guncal_apply.log", "a");
+@@ -2266,6 +2277,8 @@ static void guncal_apply_universal(int i)
+ 		{
+ 			fprintf(lf, "%s: picture %dx%d%s active %.0f ns, hs %.0f ns (vs %d lines), de_h %.0f ns, de_v %d%s -> raw x %d..%d, y %d..%d\n",
+ 				label, t.width, t.height, t.interlaced ? " interlaced" : "", t.active_ns, t.hs_ns, t.vs_lines, t.de_h_ns, t.de_v, t.has_window ? ", gun window" : "", e[2], e[3], e[0], e[1]);
++			fprintf(lf, "%s: tracker edges x %d..%d y %d..%d, on-screen aims kept within x %d..%d y %d..%d\n", label, ep[2], ep[3], ep[0], ep[1],
++				input[i].guncal_inset[2], input[i].guncal_inset[3], input[i].guncal_inset[0], input[i].guncal_inset[1]);
+ 			fclose(lf);
+ 		}
+ 	}
+@@ -2274,10 +2287,11 @@ static void guncal_apply_universal(int i)
+ static void crtgun_get_params(int i, crtgun_params *p)
+ {
+ 	guncal_apply_universal(i);
+-	p->xmin = input[i].guncal[2];
+-	p->xmax = input[i].guncal[3];
+-	p->ymin = input[i].guncal[0];
+-	p->ymax = input[i].guncal[1];
++	const int32_t *g = input[i].has_pic ? input[i].guncal_pic : input[i].guncal;
++	p->xmin = g[2];
++	p->xmax = g[3];
++	p->ymin = g[0];
++	p->ymax = g[1];
+ 	p->x_valid_min = cfg.lightgun_crt_x_valid_min;
+ 	p->shot_ms = cfg.lightgun_crt_shot_ms;
+ 	p->dark_ms = cfg.lightgun_crt_dark_ms;
+@@ -2293,8 +2307,21 @@ static void crtgun_deliver(int i, const crtgun_params *p)
+ {
+ 	if (p->mode != 1) return;
+ 
+-	int32_t px = crtgun[i].pub_off ? p->xmin - 1 : crtgun[i].pub_x;    // one unit outside the range clamps to the edge = offscreen
+-	int32_t py = crtgun[i].pub_off ? p->ymin - 1 : crtgun[i].pub_y;
++	// The core scales the gun over guncal[] (the picture, or the core's own window on it). An aim stays inside the part of that
++	// range the core still counts as on the screen; offscreen is one unit outside it, which clamps to the edge.
++	const int32_t *g = input[i].guncal;
++	const int32_t *in = input[i].has_pic ? input[i].guncal_inset : g;
++	int32_t px, py;
++	if (crtgun[i].pub_off)
++	{
++		px = g[2] - 1;
++		py = g[0] - 1;
++	}
++	else
++	{
++		px = crtgun[i].pub_x < in[2] ? in[2] : crtgun[i].pub_x > in[3] ? in[3] : crtgun[i].pub_x;
++		py = crtgun[i].pub_y < in[0] ? in[0] : crtgun[i].pub_y > in[1] ? in[1] : crtgun[i].pub_y;
++	}
+ 
+ 	struct input_absinfo ai;
+ 	struct input_event e;
+@@ -2304,14 +2331,14 @@ static void crtgun_deliver(int i, const crtgun_params *p)
+ 
+ 	if (!crtgun_sent_ok[i] || px != crtgun_sent[i][0])
+ 	{
+-		ai.minimum = p->xmin; ai.maximum = p->xmax;
++		ai.minimum = g[2]; ai.maximum = g[3];
+ 		e.code = ABS_X; e.value = px;
+ 		input_cb(&e, &ai, i);
+ 		crtgun_sent[i][0] = px;
+ 	}
+ 	if (!crtgun_sent_ok[i] || py != crtgun_sent[i][1])
+ 	{
+-		ai.minimum = p->ymin; ai.maximum = p->ymax;
++		ai.minimum = g[0]; ai.maximum = g[1];
+ 		e.code = ABS_Y; e.value = py;
+ 		input_cb(&e, &ai, i);
+ 		crtgun_sent[i][1] = py;
+diff --git a/test/guncal_test.cpp b/test/guncal_test.cpp
+index d336ea9..4f449e3 100644
+--- a/test/guncal_test.cpp
++++ b/test/guncal_test.cpp
+@@ -316,8 +316,32 @@ static void test_edges_reject_nonsense()
+ 	CHECK(!guncal_core_edges(&f, &t, e));
+ }
+ 
++// The Sega Model 2 core's filled 15 kHz picture (496 x 480 interlaced) under the project's own calibration: the picture edges the tracker
++// judges against, and the range an aim is kept within so the core's 5% off-screen strip is only entered by a real shot off the screen.
++static void test_inset_for_the_model2_core()
++{
++	guncal_fit f;
++	memset(&f, 0, sizeof(f));
++	f.ax = 1.188; f.bx = 114.2; f.ay = 0.986; f.by = 19.04; f.valid = 1;
++	guncal_core_timing t;
++	memset(&t, 0, sizeof(t));
++	t.active_ns = 50070; t.width = 496; t.height = 480; t.interlaced = 1;
++	t.hs_ns = 64.0 * t.active_ns / t.width; t.vs_lines = 3; t.de_h_ns = 7270; t.de_v = 13;
++	t.inset_pct = 13.0 * 100.0 / 255.0;
++	int e[4], in[4];
++	CHECK(guncal_core_edges(&f, &t, e));
++	CHECK(e[0] == 18 && e[1] == 254 && e[2] == 166 && e[3] == 759);
++	guncal_inset_range(e, t.inset_pct, in);
++	CHECK(in[2] > e[2] && in[3] < e[3] && in[0] > e[0] && in[1] < e[1]);
++	// 13/255 of each span: x 593 raw -> 30.2, y 236 raw -> 12.0
++	CHECK(in[2] == 197 && in[3] == 728 && in[0] == 31 && in[1] == 241);
++	guncal_inset_range(e, 0.0, in);                                       // no strip: the range itself
++	CHECK(in[0] == e[0] && in[1] == e[1] && in[2] == e[2] && in[3] == e[3]);
++}
++
+ int main()
+ {
++	test_inset_for_the_model2_core();
+ 	test_edges_with_a_gun_window();
+ 	test_edges_for_an_interlaced_core();
+ 	test_fit_recovers_the_line();
+-- 
+2.53.0.windows.1
+

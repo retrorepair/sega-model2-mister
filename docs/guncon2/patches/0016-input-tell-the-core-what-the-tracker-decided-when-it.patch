@@ -1,0 +1,85 @@
+From f29e373a04ed43ce897faa797ca333ee25715594 Mon Sep 17 00:00:00 2001
+From: retrorepair <joelwhybrow@googlemail.com>
+Date: Sun, 18 Oct 2026 23:27:08 +0100
+Subject: [PATCH 16/16] input: tell the core what the tracker decided when it decides
+ it, not at the next gun event
+
+The kernel reports a gun only when a value changes. A gun that goes dark and stays still sends nothing for seconds, so the tracker's timed
+decisions (a dark gap outlasting dark_ms, the shot window closing) were only evaluated at the next event, and in the continuous mode the
+core was only given the tracker's result when an axis event happened to pass through. The aim stayed where it last was for a few seconds,
+and an off-screen decision at a trigger pull (no axis event follows when the gun is dark) never reached the core before the trigger did.
+
+crtgun_deliver() now serves both modes, after every event and from an 8 ms tick, and the axis events no longer bypass it.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ input.cpp | 32 ++++++++++++++++++++++++++++----
+ 1 file changed, 28 insertions(+), 4 deletions(-)
+
+diff --git a/input.cpp b/input.cpp
+index 8080a8c..5b69359 100644
+--- a/input.cpp
++++ b/input.cpp
+@@ -2305,8 +2305,6 @@ static bool    crtgun_sent_ok[NUMDEV];
+ 
+ static void crtgun_deliver(int i, const crtgun_params *p)
+ {
+-	if (p->mode != 1) return;
+-
+ 	// The core scales the gun over guncal[] (the picture, or the core's own window on it). An aim stays inside the part of that
+ 	// range the core still counts as on the screen; offscreen is one unit outside it, which clamps to the edge.
+ 	const int32_t *g = input[i].guncal;
+@@ -2346,6 +2344,31 @@ static void crtgun_deliver(int i, const crtgun_params *p)
+ 	crtgun_sent_ok[i] = true;
+ }
+ 
++// The tracker's decisions depend on TIME (a dark gap that outlasts dark_ms, a flash window that closes), but the kernel delivers a report
++// only when a value changed, so a gun that goes dark and stays still sends nothing for seconds and the decision was only taken, and the
++// core only told, at the next event: the aim stayed where it last was for a few seconds, and the off-screen state arrived late (or not
++// before the trigger). Re-evaluate every few milliseconds, and always hand the core the tracker's result, not the raw axes.
++static void crtgun_tick(void)
++{
++	static uint32_t next = 0;
++	if (!cfg.lightgun_crt_tracker) return;
++	if (next && !CheckTimer(next)) return;
++	next = GetTimer(8);
++
++	struct timespec ts;
++	clock_gettime(CLOCK_REALTIME, &ts);
++	uint32_t now = (uint32_t)ts.tv_sec * 1000u + (uint32_t)(ts.tv_nsec / 1000000);
++
++	for (int i = 0; i < NUMDEV; i++)
++	{
++		if (input[i].quirk != QUIRK_LIGHTGUN_CRT || !crtgun_sent_ok[i]) continue;    // a gun that has reported at least once
++		crtgun_params p;
++		crtgun_get_params(i, &p);
++		crtgun_update(&crtgun[i], &p, now);
++		crtgun_deliver(i, &p);
++	}
++}
++
+ // Feed one raw evdev event of a CRT lightgun to the tracker (lightgun_crt.cpp).
+ static void crtgun_feed(int i, const struct input_event *ev)
+ {
+@@ -6105,6 +6128,7 @@ int input_test(int getchar)
+ 	{
+ 		int timeout = 0;
+ 		if (is_menu() && video_fb_state()) timeout = 25;
++		crtgun_tick();
+ 
+ 		while (1)
+ 		{
+@@ -6531,8 +6555,8 @@ int input_test(int getchar)
+ 									if (!cfg.lightgun_crt_tracker || crtgun[i].raw_x >= (int32_t)cfg.lightgun_crt_x_valid_min)
+ 										menu_lightgun_cb(i, ev.type, ev.code, ev.value);
+ 
+-									// Aim-from-the-flash mode: the core is given the held aim by crtgun_deliver(), not the raw axes.
+-									if (cfg.lightgun_crt_tracker && cfg.lightgun_crt_mode == 1) continue;
++									// With the tracker the core is given its result by crtgun_deliver() (after every event and on a timer), not the raw axes.
++									if (cfg.lightgun_crt_tracker) continue;
+ 
+ 									if (ev.code == ABS_X)
+ 									{
+-- 
+2.53.0.windows.1
+
