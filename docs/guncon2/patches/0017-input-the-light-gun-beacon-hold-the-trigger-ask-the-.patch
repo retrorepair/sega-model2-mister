@@ -1,4 +1,4 @@
-From 482e2e3134d94f96eb587a7ea727af7874b5fc67 Mon Sep 17 00:00:00 2001
+From 88a6b405c797711f07dd8ea6d307e65d61bc85cb Mon Sep 17 00:00:00 2001
 From: retrorepair <joelwhybrow@googlemail.com>
 Date: Sun, 18 Oct 2026 23:52:42 +0100
 Subject: [PATCH 17/17] input: the light-gun beacon - hold the trigger, ask the core
@@ -16,11 +16,11 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---
  cfg.cpp                    |   2 +
  cfg.h                      |   1 +
- input.cpp                  |  59 +++++++++++++++++++--
+ input.cpp                  |  61 ++++++++++++++++++++--
  lightgun_crt.cpp           |  97 +++++++++++++++++++++++++++++++++++
  lightgun_crt.h             |  33 ++++++++++++
  test/lightgun_crt_test.cpp | 102 ++++++++++++++++++++++++++++++++++++-
- 6 files changed, 289 insertions(+), 5 deletions(-)
+ 6 files changed, 291 insertions(+), 5 deletions(-)
 
 diff --git a/cfg.cpp b/cfg.cpp
 index 630ee37..93e0770 100644
@@ -55,7 +55,7 @@ index 5823b3a..0065943 100644
  	uint8_t wheel_force;
  	uint16_t wheel_range;
 diff --git a/input.cpp b/input.cpp
-index 5b69359..e9c5b33 100644
+index 5b69359..ba7f510 100644
 --- a/input.cpp
 +++ b/input.cpp
 @@ -2090,9 +2090,9 @@ static void gundbg_log_out(int dev, const crtgun_state *st, uint32_t t_ms)
@@ -88,15 +88,24 @@ index 5b69359..e9c5b33 100644
  static void crtgun_get_params(int i, crtgun_params *p)
  {
  	guncal_apply_universal(i);
-@@ -2297,6 +2308,7 @@ static void crtgun_get_params(int i, crtgun_params *p)
+@@ -2297,6 +2308,8 @@ static void crtgun_get_params(int i, crtgun_params *p)
  	p->dark_ms = cfg.lightgun_crt_dark_ms;
  	p->edge_pct = cfg.lightgun_crt_edge_pct;
  	p->mode = cfg.lightgun_crt_mode;
 +	p->beacon = crtgun_beacon_core() ? 1 : 0;
++	if (p->beacon) p->mode = 0;       // the beacon measures every shot itself; between shots the aim just follows the gun
  }
  
  // Mode 1 (aim from the game's flash): the core is given the held aim, not the gun's raw axes. Send it whenever it changes.
-@@ -2344,6 +2356,42 @@ static void crtgun_deliver(int i, const crtgun_params *p)
+@@ -2305,6 +2318,7 @@ static bool    crtgun_sent_ok[NUMDEV];
+ 
+ static void crtgun_deliver(int i, const crtgun_params *p)
+ {
++	(void)p;
+ 	// The core scales the gun over guncal[] (the picture, or the core's own window on it). An aim stays inside the part of that
+ 	// range the core still counts as on the screen; offscreen is one unit outside it, which clamps to the edge.
+ 	const int32_t *g = input[i].guncal;
+@@ -2344,6 +2358,42 @@ static void crtgun_deliver(int i, const crtgun_params *p)
  	crtgun_sent_ok[i] = true;
  }
  
@@ -139,7 +148,7 @@ index 5b69359..e9c5b33 100644
  // The tracker's decisions depend on TIME (a dark gap that outlasts dark_ms, a flash window that closes), but the kernel delivers a report
  // only when a value changed, so a gun that goes dark and stays still sends nothing for seconds and the decision was only taken, and the
  // core only told, at the next event: the aim stayed where it last was for a few seconds, and the off-screen state arrived late (or not
-@@ -2365,7 +2413,9 @@ static void crtgun_tick(void)
+@@ -2365,7 +2415,9 @@ static void crtgun_tick(void)
  		crtgun_params p;
  		crtgun_get_params(i, &p);
  		crtgun_update(&crtgun[i], &p, now);
@@ -149,7 +158,7 @@ index 5b69359..e9c5b33 100644
  	}
  }
  
-@@ -2384,6 +2434,7 @@ static void crtgun_feed(int i, const struct input_event *ev)
+@@ -2384,6 +2436,7 @@ static void crtgun_feed(int i, const struct input_event *ev)
  	else if (ev->type == EV_KEY && ev->code == GUNCON2_TRIGGER_CODE)
  	{
  		crtgun_set_trigger(&crtgun[i], ev->value != 0, now, &p);
@@ -157,7 +166,7 @@ index 5b69359..e9c5b33 100644
  		crtgun_update(&crtgun[i], &p, now);
  	}
  	else if (ev->type == EV_SYN)
-@@ -2395,7 +2446,9 @@ static void crtgun_feed(int i, const struct input_event *ev)
+@@ -2395,7 +2448,9 @@ static void crtgun_feed(int i, const struct input_event *ev)
  		return;
  	}
  
@@ -167,7 +176,7 @@ index 5b69359..e9c5b33 100644
  
  #ifdef GUNDBG
  	gundbg_log_out(i, &crtgun[i], now);
-@@ -6636,7 +6689,7 @@ int input_test(int getchar)
+@@ -6636,7 +6691,7 @@ int input_test(int getchar)
  									dev = i;
  								}
  
