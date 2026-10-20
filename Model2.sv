@@ -92,6 +92,9 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 localparam CONF_STR = {
 	"Model2;;",
 	"-;",
+	// Main_MiSTer looks for this line (any dash line containing "GunCon flash") to learn that the core shows the whole picture white while
+	// joystick_3 bit 0 is high, which a GunCon 2 needs on a pull to find its aim in dark parts of the picture; without it the app does not ask.
+	"-,GunCon flash on request;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	// R682: 15 kHz INTERLACED for a 15 kHz CRT -- 57.52 fields a second (the
 	// game's rate), 15,733 Hz lines, all 384 lines as two fields of 192.
