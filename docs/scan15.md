@@ -28,6 +28,12 @@ and the video pins:
   new image every second frame (Virtua Cop: 28.8 Hz) has every output frame made of two different images if the pair straddles the change,
   so every moving thing is combed. The converter watches the renderer's `show_tag` and, if the image changed on an odd frame eight times
   running, declares that frame the even one, once. The bench checks both phases, and that a three-frame or one-frame cadence is left alone.
+- **Field order** (judged on a real CRT; the core in `releases/` and on the author's card has it): in the 262/263-line mode field 0, the field whose
+  vsync is aligned to the line start (263 lines, vsync on lines 247 to 249), carries the even output rows 0, 2 ... 478; field 1, whose vsync starts
+  half a line early (262 lines), carries the odd rows 1, 3 ... 479; 240 visible lines in each, from line 0 of the field. Field 0 is made from the first
+  (even) native frame of each pair and field 1 from the second. In the code that is `swp` = 0 (`r_c <= (field ^ swp) ? 3'd0 : 3'd4`). The same CRT
+  showed the 1:1 mode's field order looking wrong by comparison; its row parity reads the same (`ypos = {vcnt, field}`), so the difference may be
+  which native frame goes into which field, which the converter locks (pairing, above) and the 1:1 mode leaves to chance. Not established.
 - **15 kHz is always this picture.** The 1:1 picture and the options only it had (`15kHz lines`, `15kHz width`, `15kHz picture`) are gone,
   and the renderer's own interlace path is tied off (`vid_il_c` is a constant 0). 24 kHz is unchanged.
 
